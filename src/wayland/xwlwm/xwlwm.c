@@ -32,12 +32,17 @@
 static pthread_mutex_t logout_synch = PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t wm_synch = PTHREAD_MUTEX_INITIALIZER;
 
+/* retries before ICCCM destroy requests are ignored and we just kill
+ * the client outright */
+static int default_kill_count = 5;
+
 struct xwnd_state {
 	bool mapped;
 	bool paired;
 	bool override_redirect;
 	int x, y;
 	int w, h;
+	int kill_count;
 	int id;
 	char* title;
 	UT_hash_handle hh;
@@ -485,6 +490,7 @@ static void xcb_create_notify(xcb_create_notify_event_t* ev)
 		.y = ev->y,
 		.w = ev->width,
 		.h = ev->height,
+		.kill_count = default_kill_count,
 		.override_redirect = ev->override_redirect
 	};
 	HASH_ADD_INT(windows, id, state);
@@ -841,7 +847,7 @@ static void process_wm_command(const char* arg)
 	}
 	else if (strcmp(dst, "destroy") == 0){
 /* check if window support WM_DELETE_WINDOW, and if so: */
-		if (check_window_support(id, atoms[WM_DELETE_WINDOW])){
+		if (check_window_support(id, atoms[WM_DELETE_WINDOW]) && state->kill_count){
 			trace("srv-destroy, delete_window(%d)", id);
 			xcb_client_message_event_t ev = {
 				.response_type = XCB_CLIENT_MESSAGE,
@@ -852,11 +858,12 @@ static void process_wm_command(const char* arg)
 					.data32 = {atoms[WM_DELETE_WINDOW], XCB_CURRENT_TIME}
 				}
 			};
-			xcb_send_event(dpy, false, wnd_wm, XCB_EVENT_MASK_NO_EVENT, (char*)&ev);
+			xcb_send_event(dpy, 0, id, XCB_EVENT_MASK_NO_EVENT, (char*)&ev);
+			state->kill_count--;
 		}
 		else {
 			trace("srv-destroy, delete_kill(%d)", id);
-			xcb_destroy_window(dpy, id);
+			xcb_kill_client(dpy, id);
 		}
 	}
 	else if (strcmp(dst, "unfocus") == 0){
